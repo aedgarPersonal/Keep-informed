@@ -1,4 +1,4 @@
-import { requireProfile } from "@/lib/auth";
+import { requireSenior } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { type ColorName } from "@/lib/task-palette";
 import { TodayChecklist, type Instance } from "./TodayChecklist";
@@ -10,7 +10,7 @@ type InstanceRow = {
 };
 
 export default async function TodayPage() {
-  const profile = await requireProfile();
+  const profile = await requireSenior();
   const supabase = await createSupabaseServerClient();
 
   // Idempotently materialize today's instances in the senior's tz,

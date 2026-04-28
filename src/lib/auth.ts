@@ -62,3 +62,46 @@ export async function getCallerProfileId(): Promise<string> {
   if (!profile) throw new Error("no profile");
   return profile.id;
 }
+
+/**
+ * "Is this profile the senior in some active link?" — derives senior-ness
+ * from the link table. A new caregiver who hasn't added anyone yet is
+ * not a senior anywhere; a person who claimed an invite is.
+ */
+async function isSeniorInAnyLink(profileId: string): Promise<boolean> {
+  const supabase = await createSupabaseServerClient();
+  const { data } = await supabase
+    .from("senior_caregiver_links")
+    .select("id")
+    .eq("senior_id", profileId)
+    .eq("status", "active")
+    .limit(1)
+    .maybeSingle();
+  return !!data;
+}
+
+/**
+ * Allow only people who are not currently a senior-in-care. A new
+ * caregiver with zero links passes; a senior who claimed an invite
+ * is bounced to /today.
+ */
+export async function requireCaregiver(): Promise<Profile> {
+  const profile = await requireProfile();
+  if (await isSeniorInAnyLink(profile.id)) {
+    redirect("/today");
+  }
+  return profile;
+}
+
+/**
+ * Allow only people who are seniors in at least one active link.
+ * Caregivers (including new ones with zero links) are bounced to
+ * /caregiver — /today is meaningless for them.
+ */
+export async function requireSenior(): Promise<Profile> {
+  const profile = await requireProfile();
+  if (!(await isSeniorInAnyLink(profile.id))) {
+    redirect("/caregiver");
+  }
+  return profile;
+}
