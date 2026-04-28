@@ -13,7 +13,15 @@ Everything here lives in Supabase Postgres. Auth identities come from
 | `tasks` | A recurring item to do (e.g. "Take morning meds"). Owned by a senior, edited by their caregivers. |
 | `task_instances` | One materialized occurrence of a task on a specific date. The senior's daily checklist is a query against this table. |
 | `completions` | Records a senior tapping "done" on a task instance. One per instance. |
-| `rewards` | Curated jokes / fun facts shown after a completion. |
+| `personal_rewards` | Caregiver-uploaded photos / notes shown to their senior after a completion. |
+
+Rewards are a hybrid of two pools, only one of which is in the
+database (see [Rewards](#rewards) below):
+
+- **Curated**: jokes / fun facts, shipped as a static module
+  (`src/lib/rewards.ts`). No table.
+- **Personal**: caregiver-uploaded photos and short notes, scoped to
+  one senior. Lives in `personal_rewards` + Supabase Storage.
 
 A "senior" and a "caregiver" are both `profiles` rows — the role is
 attached to the *link*, not the user, so the same identity could in
@@ -77,26 +85,38 @@ create table task_instances (
 );
 create index on task_instances (senior_id, date);
 
--- completions: one per task_instance.
+-- completions: one per task_instance. reward_key records *what* was
+-- shown, encoded as "curated:<key>" or "personal:<uuid>" so we can
+-- dedup across both pools without a second FK.
 create table completions (
   id              uuid primary key default gen_random_uuid(),
   task_instance_id uuid not null unique references task_instances(id) on delete cascade,
   senior_id       uuid not null references profiles(id) on delete cascade, -- denormalized for RLS
-  reward_id       uuid references rewards(id),
+  reward_key      text,
   completed_at    timestamptz not null default now()
 );
 create index on completions (senior_id, completed_at);
 
--- rewards: curated jokes / fun facts. Seeded by a migration; not user-editable.
-create type reward_kind as enum ('joke', 'fact');
+-- personal_rewards: caregiver-uploaded photos and notes for one senior.
+-- Photo files live in the `personal-rewards` Storage bucket; media_path
+-- is the object path within that bucket.
+create type personal_reward_kind as enum ('photo', 'note');
 
-create table rewards (
+create table personal_rewards (
   id         uuid primary key default gen_random_uuid(),
-  kind       reward_kind not null,
-  body       text not null,
+  senior_id  uuid not null references profiles(id) on delete cascade,
+  kind       personal_reward_kind not null,
+  body       text,                 -- caption (photo) or note text
+  media_path text,                 -- Storage object path; null when kind='note'
+  created_by uuid not null references profiles(id),
   active     boolean not null default true,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  check (
+    (kind = 'photo' and media_path is not null) or
+    (kind = 'note'  and body       is not null)
+  )
 );
+create index on personal_rewards (senior_id) where active;
 ```
 
 ### Notes on shape
@@ -152,13 +172,70 @@ small.
 
 ### Completion → reward
 1. Senior taps a checklist item.
-2. Insert into `completions` with the `task_instance_id`. The server
-   picks a random active reward and stores `reward_id`.
-3. UI shows the reward card.
+2. Insert into `completions` with the `task_instance_id`.
+3. The server runs the picker (see [Rewards](#rewards)) over the
+   senior's personal pool + the static curated module, biased
+   against anything in the senior's recent `completions.reward_key`
+   history. The chosen `reward_key` is written back to the row.
+4. UI shows the reward card.
 
-Picking the reward server-side keeps the curated list private
-(seniors can't see what they haven't earned) and makes "don't repeat
-yesterday's joke" logic possible later.
+Picking server-side keeps the personal pool's media URLs scoped to
+the senior and lets the dedup window read directly from
+`completions` without a client round-trip.
+
+## Rewards
+
+Two pools, picked from at completion time:
+
+- **Curated pool** — jokes / fun facts in `src/lib/rewards.ts`,
+  shipped with the app. Each item has a stable string `key` used
+  in `completions.reward_key` as `"curated:<key>"`.
+- **Personal pool** — rows in `personal_rewards` for the senior,
+  with `active = true`. Recorded as `"personal:<uuid>"`.
+
+### Picker
+
+```
+input:  personal_pool, curated_pool, recent_keys (last N completions
+        for this senior, default N = 4)
+output: one reward (with key)
+
+1. Drop anything whose key is in recent_keys to make a "fresh" view
+   of each pool.
+2. If fresh_personal is non-empty, pick from it with probability
+   PERSONAL_RATIO (default 0.7); otherwise from fresh_curated.
+3. If the chosen pool's fresh view is empty, fall back to the other
+   fresh view.
+4. If both fresh views are empty, ignore recent_keys and pick from
+   the union — guarantees we always return something.
+```
+
+Why it's structured this way:
+
+- Personal beats curated 70/30 when both are available, so
+  caregiver-uploaded content is the dominant experience without
+  starving the curated fallback (which adds variety).
+- Empty personal pool degrades silently to 100% curated — important
+  on day one before any caregiver has uploaded anything.
+- `recent_keys` is a soft constraint, not hard. With ~6 curated items
+  and a recent buffer of 4, there's always something fresh; if the
+  curated module ever shrinks, the picker still returns instead of
+  throwing.
+
+### Storage
+
+Personal photos live in a private Supabase Storage bucket
+`personal-rewards`. Object paths follow `<senior_id>/<reward_id>.<ext>`,
+which makes the per-senior RLS predicate trivial:
+
+```sql
+-- Pseudocode for bucket policy:
+-- read:  current user is the senior or a caregiver for split_part(name, '/', 1)
+-- write: current user is_caregiver_for(split_part(name, '/', 1))
+```
+
+Senior reads happen via signed URLs minted by the same server
+action that runs the picker — clients never get the bucket key.
 
 ## RLS strategy
 
@@ -199,7 +276,7 @@ alter table senior_caregiver_links enable row level security;
 alter table tasks enable row level security;
 alter table task_instances enable row level security;
 alter table completions enable row level security;
-alter table rewards enable row level security;
+alter table personal_rewards enable row level security;
 
 -- profiles: a user can see their own row, plus the rows of anyone
 -- they're linked to in either direction.
@@ -249,8 +326,17 @@ create policy completions_delete on completions for delete using (
   senior_id = auth.uid()
 );
 
--- rewards: any authenticated user can read; nobody writes via PostgREST.
-create policy rewards_select on rewards for select to authenticated using (active);
+-- personal_rewards: senior reads own active rewards; caregivers
+-- read + write any reward for a senior they're linked to.
+create policy personal_rewards_select on personal_rewards for select using (
+  (senior_id = auth.uid() and active)
+  or is_caregiver_for(senior_id)
+);
+create policy personal_rewards_write on personal_rewards for all using (
+  is_caregiver_for(senior_id)
+) with check (
+  is_caregiver_for(senior_id) and created_by = auth.uid()
+);
 ```
 
 `task_instances` has no insert policy — materialization is done by a
@@ -263,16 +349,21 @@ malicious client backfill arbitrary dates.
   treats today as one flat list.
 - Streaks and gamification beyond a per-completion reward.
 - Recurrence beyond weekday selection (every-other-day, monthly).
-- Photo proof; messaging; push notifications.
+- Photo proof of completion; caregiver-to-caregiver messaging; push notifications.
+- Auto-sourced reward content (live web fetch, "this day in
+  history," etc.). If we ever want fresher content than the curated
+  module, the path is batch-generate-then-approve, not runtime
+  scraping — the harm asymmetry is too steep.
 - Caregiver-to-caregiver permissions ("primary" vs "viewer"). The
   `link_role` enum has the seat reserved.
 
 ## Open questions
 
-1. Invite direction (see lifecycle above).
-2. Timezone of "today". Probably store the senior's timezone on
-   `profiles` and derive the date there; UTC alone will silently
-   skew the checklist for anyone west of London.
-3. Whether to keep `rewards` in Postgres or move it to a static JSON
-   bundle. v1 schema includes the table; if it stays trivially small
-   we can drop it.
+1. Invite direction (see lifecycle above). _Decided: caregiver-first.
+   Schema update for placeholder profiles still pending in this doc._
+2. Timezone of "today". _Decided: store IANA tz on profiles, "today"
+   evaluated in the senior's tz, app prompts on detected change.
+   Schema update still pending in this doc._
+3. ~~Whether to keep `rewards` in Postgres or move it to a static
+   JSON bundle.~~ Resolved: hybrid — curated stays as a static
+   module, personal lives in `personal_rewards`. See [Rewards](#rewards).
