@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getCallerProfileId } from "@/lib/auth";
+import { isColorName } from "@/lib/task-palette";
+import { isTaskCategory } from "@/lib/task-templates";
 
 export type TaskFormState =
   | { status: "idle" }
@@ -24,6 +26,15 @@ export async function createTask(
   const title = String(formData.get("title") ?? "").trim();
   const weekdays = parseWeekdays(formData);
 
+  const categoryRaw = formData.get("category");
+  const category = isTaskCategory(categoryRaw) ? categoryRaw : "other";
+
+  const colorRaw = String(formData.get("color") ?? "").trim();
+  const color = isColorName(colorRaw) ? colorRaw : null;
+
+  const notesRaw = String(formData.get("notes") ?? "").trim();
+  const notes = notesRaw.length > 0 ? notesRaw.slice(0, 500) : null;
+
   if (!seniorId) return { status: "error", message: "Missing senior id." };
   if (!title) return { status: "error", message: "Please enter a title." };
 
@@ -34,6 +45,9 @@ export async function createTask(
     senior_id: seniorId,
     title,
     weekdays,
+    category,
+    color,
+    notes,
     created_by: profileId,
   });
   if (error) return { status: "error", message: error.message };

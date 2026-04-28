@@ -1,11 +1,12 @@
 import { requireProfile } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { type ColorName } from "@/lib/task-palette";
 import { TodayChecklist, type Instance } from "./TodayChecklist";
 import { TimezonePrompt } from "./TimezonePrompt";
 
 type InstanceRow = {
   id: string;
-  task: { title: string } | null;
+  task: { title: string; color: ColorName | null } | null;
 };
 
 export default async function TodayPage() {
@@ -20,7 +21,7 @@ export default async function TodayPage() {
 
   const { data: rows, error } = await supabase
     .from("task_instances")
-    .select("id, task:tasks!task_id(title)")
+    .select("id, task:tasks!task_id(title, color)")
     .eq("senior_id", profile.id)
     .eq("date", localToday ?? "")
     .returns<InstanceRow[]>();
@@ -43,6 +44,7 @@ export default async function TodayPage() {
     .map((r) => ({
       id: r.id,
       title: r.task?.title ?? "",
+      color: r.task?.color ?? null,
       completed: completedSet.has(r.id),
     }))
     .filter((i) => i.title);

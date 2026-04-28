@@ -2,11 +2,13 @@
 
 import { useState, useTransition } from "react";
 import { type Reward } from "@/lib/rewards";
+import { COLOR_BG, type ColorName } from "@/lib/task-palette";
 import { completeTaskInstance } from "./actions";
 
 export type Instance = {
   id: string;       // task_instance.id
   title: string;
+  color: ColorName | null;
   completed: boolean;
 };
 
@@ -58,24 +60,32 @@ export function TodayChecklist({ instances }: { instances: Instance[] }) {
                 aria-pressed={isDone}
                 disabled={isDone}
                 className={
-                  "flex w-full items-center gap-4 rounded-2xl border-2 px-5 py-5 text-left text-2xl font-medium transition-colors " +
+                  "flex w-full items-stretch overflow-hidden rounded-2xl border-2 text-left text-2xl font-medium transition-colors " +
                   (isDone
                     ? "border-green-700 bg-green-50 text-green-900"
                     : "border-zinc-300 bg-white text-zinc-900 active:bg-blue-50")
                 }
               >
-                <span
-                  aria-hidden
-                  className={
-                    "flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 text-2xl " +
-                    (isDone
-                      ? "border-green-700 bg-green-700 text-white"
-                      : "border-zinc-400 bg-white text-transparent")
-                  }
-                >
-                  ✓
+                {task.color && (
+                  <span
+                    aria-hidden
+                    className={`w-3 shrink-0 ${COLOR_BG[task.color]}`}
+                  />
+                )}
+                <span className="flex flex-1 items-center gap-4 px-5 py-5">
+                  <span
+                    aria-hidden
+                    className={
+                      "flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 text-2xl " +
+                      (isDone
+                        ? "border-green-700 bg-green-700 text-white"
+                        : "border-zinc-400 bg-white text-transparent")
+                    }
+                  >
+                    ✓
+                  </span>
+                  <span className="flex-1">{task.title}</span>
                 </span>
-                <span className="flex-1">{task.title}</span>
               </button>
             </li>
           );

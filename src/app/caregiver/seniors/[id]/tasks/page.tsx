@@ -2,6 +2,8 @@ import Link from "next/link";
 import { requireProfile } from "@/lib/auth";
 import { loadLinkedSenior } from "@/lib/seniors";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { CATEGORY_LABELS, type TaskCategory } from "@/lib/task-templates";
+import { COLOR_BG, type ColorName } from "@/lib/task-palette";
 import { NewTaskForm } from "./NewTaskForm";
 import { archiveTask } from "./actions";
 
@@ -24,6 +26,15 @@ function describeWeekdays(weekdays: number[]): string {
   return [...weekdays].sort().map((d) => DAY_LABELS[d]).join(" ");
 }
 
+type TaskRow = {
+  id: string;
+  title: string;
+  weekdays: number[];
+  category: TaskCategory;
+  color: ColorName | null;
+  notes: string | null;
+};
+
 export default async function TasksPage({
   params,
 }: {
@@ -36,10 +47,11 @@ export default async function TasksPage({
 
   const { data: tasks, error } = await supabase
     .from("tasks")
-    .select("id, title, weekdays")
+    .select("id, title, weekdays, category, color, notes")
     .eq("senior_id", senior.id)
     .is("archived_at", null)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .returns<TaskRow[]>();
   if (error) throw new Error(error.message);
 
   return (
@@ -64,24 +76,42 @@ export default async function TasksPage({
             {(tasks ?? []).map((t) => (
               <li
                 key={t.id}
-                className="flex items-center justify-between gap-3 rounded-2xl border-2 border-zinc-200 px-5 py-4"
+                className="flex items-stretch overflow-hidden rounded-2xl border-2 border-zinc-200"
               >
-                <span className="flex flex-col">
-                  <span className="text-lg font-medium">{t.title}</span>
-                  <span className="text-sm text-zinc-500">
-                    {describeWeekdays(t.weekdays as number[])}
+                {t.color && (
+                  <span
+                    aria-hidden
+                    className={`w-2 shrink-0 ${COLOR_BG[t.color]}`}
+                  />
+                )}
+                <div className="flex flex-1 items-start justify-between gap-3 px-5 py-4">
+                  <span className="flex flex-1 flex-col gap-1">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="text-lg font-medium">{t.title}</span>
+                      <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-zinc-600">
+                        {CATEGORY_LABELS[t.category]}
+                      </span>
+                    </span>
+                    <span className="text-sm text-zinc-500">
+                      {describeWeekdays(t.weekdays)}
+                    </span>
+                    {t.notes && (
+                      <span className="text-sm italic text-zinc-500">
+                        {t.notes}
+                      </span>
+                    )}
                   </span>
-                </span>
-                <form action={archiveTask}>
-                  <input type="hidden" name="senior_id" value={senior.id} />
-                  <input type="hidden" name="task_id" value={t.id} />
-                  <button
-                    type="submit"
-                    className="text-sm font-medium text-red-700"
-                  >
-                    Archive
-                  </button>
-                </form>
+                  <form action={archiveTask}>
+                    <input type="hidden" name="senior_id" value={senior.id} />
+                    <input type="hidden" name="task_id" value={t.id} />
+                    <button
+                      type="submit"
+                      className="text-sm font-medium text-red-700"
+                    >
+                      Archive
+                    </button>
+                  </form>
+                </div>
               </li>
             ))}
           </ul>
