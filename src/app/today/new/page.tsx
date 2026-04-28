@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireSenior } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { SeniorTaskForm } from "./SeniorTaskForm";
+import { SeniorTaskForm } from "../SeniorTaskForm";
 
 export default async function NewSeniorTaskPage() {
   const profile = await requireSenior();

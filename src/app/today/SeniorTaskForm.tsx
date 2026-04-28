@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { addSeniorTask, type AddTaskState } from "../actions";
+import { addSeniorTask, editSeniorTask, type AddTaskState } from "./actions";
 import {
   COLOR_BG,
   COLOR_LABELS,
@@ -29,21 +29,45 @@ function todayLocalISO(): string {
   return `${y}-${m}-${day}`;
 }
 
+export type SeniorTaskFormInitial = {
+  title: string;
+  schedule: "recurring" | "one_off";
+  weekdays: number[];
+  dueDate: string;
+  color: ColorName | null;
+};
+
 export function SeniorTaskForm({
   allowRecurring,
+  taskId,
+  initial,
 }: {
   allowRecurring: boolean;
+  /** Pass to render in edit mode; the form will call editSeniorTask. */
+  taskId?: string;
+  initial?: SeniorTaskFormInitial;
 }) {
+  const isEdit = Boolean(taskId);
+  const start: SeniorTaskFormInitial = initial ?? {
+    title: "",
+    schedule: allowRecurring ? "recurring" : "one_off",
+    weekdays: [],
+    dueDate: allowRecurring ? "" : todayLocalISO(),
+    color: null,
+  };
+
   const [state, formAction, isPending] = useActionState(
-    addSeniorTask,
+    isEdit ? editSeniorTask : addSeniorTask,
     initialState,
   );
   const [schedule, setSchedule] = useState<"recurring" | "one_off">(
-    allowRecurring ? "recurring" : "one_off",
+    start.schedule,
   );
-  const [weekdays, setWeekdays] = useState<Set<number>>(new Set());
-  const [dueDate, setDueDate] = useState(todayLocalISO());
-  const [color, setColor] = useState<ColorName | null>(null);
+  const [weekdays, setWeekdays] = useState<Set<number>>(
+    new Set(start.weekdays),
+  );
+  const [dueDate, setDueDate] = useState(start.dueDate || todayLocalISO());
+  const [color, setColor] = useState<ColorName | null>(start.color);
 
   function toggleDay(day: number) {
     setWeekdays((prev) => {
@@ -56,6 +80,7 @@ export function SeniorTaskForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-4">
+      {taskId && <input type="hidden" name="task_id" value={taskId} />}
       <input type="hidden" name="schedule" value={schedule} />
       <input type="hidden" name="color" value={color ?? ""} />
       {schedule === "recurring" &&
@@ -71,6 +96,7 @@ export function SeniorTaskForm({
           required
           maxLength={200}
           autoFocus
+          defaultValue={start.title}
           className="h-14 rounded-2xl border-2 border-zinc-300 px-4 text-xl"
           placeholder="What do you want to add?"
         />
@@ -187,7 +213,13 @@ export function SeniorTaskForm({
         disabled={isPending}
         className="flex h-16 items-center justify-center rounded-2xl bg-blue-700 text-xl font-semibold text-white disabled:opacity-60"
       >
-        {isPending ? "Adding…" : "Add task"}
+        {isPending
+          ? isEdit
+            ? "Saving…"
+            : "Adding…"
+          : isEdit
+            ? "Save changes"
+            : "Add task"}
       </button>
       {state.status === "error" && (
         <p className="text-base text-red-700">{state.message}</p>

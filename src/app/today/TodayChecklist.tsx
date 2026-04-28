@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
 import { type Reward } from "@/lib/rewards";
 import { COLOR_BG, type ColorName } from "@/lib/task-palette";
@@ -158,15 +159,23 @@ export function TodayChecklist({ instances }: { instances: Instance[] }) {
                   </button>
                 )}
                 {task.ownTask && !isDone && (
-                  <form action={archiveOwnTask}>
-                    <input type="hidden" name="task_id" value={task.taskId} />
-                    <button
-                      type="submit"
-                      className="px-3 py-1 text-sm font-medium text-zinc-500"
+                  <>
+                    <Link
+                      href={`/today/edit/${task.taskId}`}
+                      className="px-3 py-1 text-sm font-medium text-blue-700"
                     >
-                      Remove
-                    </button>
-                  </form>
+                      Edit
+                    </Link>
+                    <form action={archiveOwnTask}>
+                      <input type="hidden" name="task_id" value={task.taskId} />
+                      <button
+                        type="submit"
+                        className="px-3 py-1 text-sm font-medium text-zinc-500"
+                      >
+                        Remove
+                      </button>
+                    </form>
+                  </>
                 )}
               </div>
             </li>
