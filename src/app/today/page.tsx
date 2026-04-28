@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireSenior } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { type ColorName } from "@/lib/task-palette";
@@ -6,12 +7,30 @@ import { TimezonePrompt } from "./TimezonePrompt";
 
 type InstanceRow = {
   id: string;
-  task: { title: string; color: ColorName | null } | null;
+  task: {
+    id: string;
+    title: string;
+    color: ColorName | null;
+    created_by: string;
+    archived_at: string | null;
+  } | null;
 };
 
 export default async function TodayPage() {
   const profile = await requireSenior();
   const supabase = await createSupabaseServerClient();
+
+  const { data: row } = await supabase
+    .from("profiles")
+    .select("senior_autonomy")
+    .eq("id", profile.id)
+    .maybeSingle();
+  const autonomy =
+    (row?.senior_autonomy as
+      | "view_only"
+      | "assisted"
+      | "self_directed"
+      | undefined) ?? "view_only";
 
   // Idempotently materialize today's instances in the senior's tz,
   // then load them with their task titles.
@@ -21,7 +40,9 @@ export default async function TodayPage() {
 
   const { data: rows, error } = await supabase
     .from("task_instances")
-    .select("id, task:tasks!task_id(title, color)")
+    .select(
+      "id, task:tasks!task_id(id, title, color, created_by, archived_at)",
+    )
     .eq("senior_id", profile.id)
     .eq("date", localToday ?? "")
     .returns<InstanceRow[]>();
@@ -44,12 +65,15 @@ export default async function TodayPage() {
   }
 
   const instances: Instance[] = (rows ?? [])
+    .filter((r) => r.task && r.task.archived_at === null)
     .map((r) => ({
       id: r.id,
-      title: r.task?.title ?? "",
-      color: r.task?.color ?? null,
+      taskId: r.task!.id,
+      title: r.task!.title,
+      color: r.task!.color,
       completed: completedAtById.has(r.id),
       completedAt: completedAtById.get(r.id) ?? null,
+      ownTask: r.task!.created_by === profile.id,
     }))
     .filter((i) => i.title);
 
@@ -85,6 +109,15 @@ export default async function TodayPage() {
         </p>
       ) : (
         <TodayChecklist instances={instances} />
+      )}
+
+      {autonomy !== "view_only" && (
+        <Link
+          href="/today/new"
+          className="flex h-14 items-center justify-center rounded-2xl border-2 border-blue-700 text-lg font-semibold text-blue-700"
+        >
+          + Add a task
+        </Link>
       )}
     </main>
   );

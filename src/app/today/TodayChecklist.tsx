@@ -3,15 +3,22 @@
 import { useEffect, useState, useTransition } from "react";
 import { type Reward } from "@/lib/rewards";
 import { COLOR_BG, type ColorName } from "@/lib/task-palette";
-import { completeTaskInstance, undoCompletion } from "./actions";
+import {
+  archiveOwnTask,
+  completeTaskInstance,
+  undoCompletion,
+} from "./actions";
 
 export type Instance = {
-  id: string;       // task_instance.id
+  id: string; // task_instance.id
+  taskId: string;
   title: string;
   color: ColorName | null;
   completed: boolean;
   /** ISO 8601, or null if not yet completed. Used to gate the Undo button. */
   completedAt: string | null;
+  /** True when the senior themselves created this task — gates the Archive affordance. */
+  ownTask: boolean;
 };
 
 const UNDO_WINDOW_MS = 5 * 60 * 1000;
@@ -140,15 +147,28 @@ export function TodayChecklist({ instances }: { instances: Instance[] }) {
                   <span className="flex-1">{task.title}</span>
                 </span>
               </button>
-              {canUndo && (
-                <button
-                  type="button"
-                  onClick={() => undo(task.id)}
-                  className="self-end px-3 py-1 text-sm font-medium text-blue-700"
-                >
-                  Undo
-                </button>
-              )}
+              <div className="flex justify-end gap-3">
+                {canUndo && (
+                  <button
+                    type="button"
+                    onClick={() => undo(task.id)}
+                    className="px-3 py-1 text-sm font-medium text-blue-700"
+                  >
+                    Undo
+                  </button>
+                )}
+                {task.ownTask && !isDone && (
+                  <form action={archiveOwnTask}>
+                    <input type="hidden" name="task_id" value={task.taskId} />
+                    <button
+                      type="submit"
+                      className="px-3 py-1 text-sm font-medium text-zinc-500"
+                    >
+                      Remove
+                    </button>
+                  </form>
+                )}
+              </div>
             </li>
           );
         })}

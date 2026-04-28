@@ -1,5 +1,6 @@
 "use server";
 
+import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getCallerProfileId } from "@/lib/auth";
@@ -120,6 +121,56 @@ export async function undoCompletion(
   }
   revalidatePath("/today");
   return { ok: true, taskInstanceId };
+}
+
+export type AddTaskState =
+  | { status: "idle" }
+  | { status: "error"; message: string };
+
+export async function addSeniorTask(
+  _prev: AddTaskState,
+  formData: FormData,
+): Promise<AddTaskState> {
+  const title = String(formData.get("title") ?? "").trim();
+  const colorRaw = String(formData.get("color") ?? "").trim();
+  const color = colorRaw.length > 0 ? colorRaw : null;
+  const schedule = String(formData.get("schedule") ?? "one_off");
+
+  if (!title) return { status: "error", message: "Please enter a title." };
+
+  let weekdays: number[] | null = null;
+  let dueDate: string | null = null;
+
+  if (schedule === "one_off") {
+    const dueRaw = String(formData.get("due_date") ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueRaw)) {
+      return { status: "error", message: "Please pick a date." };
+    }
+    dueDate = dueRaw;
+  } else {
+    const raw = formData.getAll("weekdays").map((v) => Number(v));
+    const valid = raw.filter((n) => Number.isInteger(n) && n >= 0 && n <= 6);
+    weekdays = valid.length > 0 ? Array.from(new Set(valid)).sort() : [0, 1, 2, 3, 4, 5, 6];
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.rpc("senior_create_task", {
+    p_title: title,
+    p_color: color,
+    p_weekdays: weekdays,
+    p_due_date: dueDate,
+  });
+  if (error) return { status: "error", message: error.message };
+
+  redirect("/today");
+}
+
+export async function archiveOwnTask(formData: FormData): Promise<void> {
+  const taskId = String(formData.get("task_id") ?? "");
+  if (!taskId) return;
+  const supabase = await createSupabaseServerClient();
+  await supabase.rpc("senior_archive_task", { p_task: taskId });
+  revalidatePath("/today");
 }
 
 export async function updateTimezone(timezone: string): Promise<void> {
