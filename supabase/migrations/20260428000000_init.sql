@@ -188,6 +188,24 @@ begin
 end;
 $$;
 
+-- Resolve a senior invite code to its placeholder display name. Used
+-- by /claim/[code] to greet the senior by name before they sign in.
+-- Returns null if the code is unknown, expired, or already claimed.
+-- Safe to expose: caregivers chose the display_name they're willing
+-- to put on the invite, and the code itself is the access token.
+create or replace function public.lookup_senior_invite(p_code text)
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select display_name
+    from profiles
+   where invite_code = p_code
+     and auth_user_id is null;
+$$;
+
 -- Senior signs in via magic link, then claims their placeholder profile.
 create or replace function public.claim_senior_profile(p_code text)
 returns uuid
@@ -449,3 +467,7 @@ grant execute on function public.claim_senior_profile(text)         to authentic
 grant execute on function public.claim_caregiver_invite(text)       to authenticated;
 grant execute on function public.materialize_today(uuid)            to authenticated;
 grant execute on function public.record_completion(uuid, text)      to authenticated;
+
+-- lookup_senior_invite is callable without a session — anonymous and
+-- authenticated both. The code is the access token.
+grant execute on function public.lookup_senior_invite(text) to anon, authenticated;
