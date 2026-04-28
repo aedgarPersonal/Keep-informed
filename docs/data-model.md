@@ -28,18 +28,34 @@ attached to the *link*, not the user, so the same identity could in
 principle be a caregiver in one circle and a senior in another. v1
 won't expose that, but the schema doesn't preclude it.
 
+`profiles.id` is **not** `auth.users.id`. A profile can exist before
+its auth user does — that's how a caregiver creates a senior they
+haven't onboarded yet. The mapping lives on `auth_user_id`, which is
+filled when the senior claims their invite.
+
 ## Tables
 
 ```sql
--- profiles: one row per auth user.
+-- profiles: one row per person we know about.
+-- auth_user_id is null on placeholder profiles created by a caregiver
+-- before the senior has signed in for the first time.
+-- timezone is an IANA name (e.g. "America/New_York") and drives the
+-- senior's "today" calculation.
+-- invite_code is set on a senior placeholder until the senior claims it.
 create table profiles (
-  id            uuid primary key references auth.users(id) on delete cascade,
+  id            uuid primary key default gen_random_uuid(),
+  auth_user_id  uuid unique references auth.users(id) on delete set null,
   display_name  text not null,
+  timezone      text not null default 'UTC',
+  invite_code   text unique,
   created_at    timestamptz not null default now()
 );
+create index on profiles (auth_user_id);
 
 -- senior_caregiver_links: M:N with invite state.
--- caregiver_id is null while the invite is pending and not yet claimed.
+-- caregiver_id is null while a *secondary-caregiver* invite is pending
+-- and not yet claimed. The first caregiver-senior pair is created
+-- 'active' from the start (caregiver-first onboarding — see Lifecycles).
 create type link_status as enum ('pending', 'active', 'revoked');
 create type link_role   as enum ('caregiver');  -- room for 'primary' etc.
 
@@ -135,40 +151,79 @@ create index on personal_rewards (senior_id) where active;
 
 ## Lifecycles
 
-### Invite → link
-1. Caregiver A signs up, creates a senior profile (or invites an
-   existing senior), generates a row in `senior_caregiver_links` with
-   `senior_id` set, `caregiver_id` null, `invite_code` set, `status`
-   = `'pending'`.
-2. Senior opens the invite link (code in URL), authenticates via
-   magic link.
-3. A `claim_invite(code text)` SECURITY DEFINER RPC validates the
-   code, sets `caregiver_id` (or `senior_id` — see open question
-   below), `status = 'active'`, `accepted_at = now()`, and clears
-   `invite_code`.
+### Onboarding (caregiver-first)
 
-Open question: who does the inviting? The brief says
-"caregiver-generated invite code/link pairs accounts." Two readable
-flows:
+The caregiver always drives onboarding. The senior never has to set
+up the app — they just receive a link.
 
-- **Caregiver-first**: caregiver signs up, creates the senior's
-  profile, sends the invite link to the senior, who then claims it.
-  The pending row has `senior_id` set, `caregiver_id` filled in by the
-  RPC at claim time.
-- **Senior-first**: senior signs up, generates a code, hands it to a
-  family member who claims it as a caregiver. The pending row has
-  `caregiver_id` set, `senior_id` filled in by the RPC at claim time.
+1. **Caregiver signs up** via magic link. On first sign-in, an app
+   bootstrap inserts a `profiles` row with `auth_user_id =
+   auth.uid()`, the caregiver's display name, and the device's
+   detected timezone.
+2. **Caregiver creates the senior**. Inserts:
+   - a `profiles` row for the senior with `auth_user_id = NULL`,
+     `display_name`, the caregiver's tz as the initial `timezone`,
+     and a freshly-generated `invite_code`.
+   - a `senior_caregiver_links` row with `senior_id` = new profile,
+     `caregiver_id` = caregiver's profile, `status = 'active'`,
+     `invited_by` = caregiver. No pending state — the caregiver is
+     active immediately. The caregiver can populate tasks right
+     away; the senior walks into a working checklist.
+3. **Caregiver sends the invite** to the senior (link, SMS, paper).
+   The link has the `invite_code` in the URL.
+4. **Senior claims** by opening the link, signing in via magic link,
+   and the page calls `claim_senior_profile(code text)` — a
+   SECURITY DEFINER RPC that, atomically:
+   - finds the placeholder profile by code,
+   - rejects if `auth.uid()` already has a profile (the senior is
+     trying to claim with an existing identity),
+   - sets `auth_user_id = auth.uid()`,
+   - clears `invite_code`,
+   - returns the now-claimed profile id.
 
-The schema supports both because either FK can be null while pending.
-We'll pick one in the auth/onboarding spike.
+### Adding more caregivers
+
+Secondary caregivers come in via a separate flow that uses the
+existing pending-link state:
+
+1. Existing caregiver inserts a `senior_caregiver_links` row with
+   `caregiver_id = NULL`, `status = 'pending'`, `invite_code` set,
+   `invited_by` = themselves.
+2. New caregiver opens the invite, signs in (creating their own
+   profile if new), and calls `claim_caregiver_invite(code text)`,
+   which fills `caregiver_id`, sets `status = 'active'`, clears the
+   code, and stamps `accepted_at`.
+
+Two distinct invite codes (one on `profiles`, one on
+`senior_caregiver_links`) cleanly separate the two trust boundaries:
+"becoming a senior on the platform" vs "joining an existing senior's
+circle."
 
 ### Daily materialization
 On the first read of `/today` for a given senior on a given date, a
 server function materializes `task_instances` for tasks whose
-`weekdays` include today and that aren't archived. Idempotent via the
-`(task_id, date)` unique constraint. We'll likely run this through
-a `materialize_today(senior uuid)` RPC so the policy surface stays
-small.
+`weekdays` include the senior's local today and that aren't
+archived. The local date is computed in the senior's timezone:
+
+```sql
+select (now() at time zone p.timezone)::date as local_today
+from profiles p where id = $1;
+```
+
+Materialization is idempotent via the `(task_id, date)` unique
+constraint. We run this through a `materialize_today(senior uuid)`
+RPC so the policy surface stays small.
+
+### Senior travels
+
+Stored timezone is the source of truth for "today." On every senior
+session, the app compares the device's `Intl.DateTimeFormat()
+.resolvedOptions().timeZone` to the stored value. If they differ,
+the senior sees a one-tap "You're in Tokyo — use Tokyo time?"
+prompt. We don't update silently: a brief log-in from a new place
+shouldn't silently shift "today" out from under everyone (including
+caregivers in other timezones who may already be looking at the
+dashboard).
 
 ### Completion → reward
 1. Senior taps a checklist item.
@@ -239,9 +294,24 @@ action that runs the picker — clients never get the bucket key.
 
 ## RLS strategy
 
+Because `profiles.id` ≠ `auth.users.id`, every policy that wants to
+ask "is the current user this profile?" goes through a helper.
 Two predicates carry almost all the work:
 
 ```sql
+-- The profile row for the current auth user, or null if no profile
+-- has been created yet (e.g. between magic-link sign-in and the
+-- senior claiming their placeholder).
+create or replace function public.current_profile_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select id from profiles where auth_user_id = auth.uid();
+$$;
+
 -- True iff the current user is an active caregiver for `senior`.
 create or replace function public.is_caregiver_for(senior uuid)
 returns boolean
@@ -254,19 +324,18 @@ as $$
     select 1
     from senior_caregiver_links
     where senior_id = senior
-      and caregiver_id = auth.uid()
+      and caregiver_id = current_profile_id()
       and status = 'active'
   );
 $$;
-
--- True iff the current user *is* `senior`.
--- (auth.uid() = senior is fine inline; this is just for symmetry.)
 ```
 
-`security definer` on `is_caregiver_for` is intentional: without it,
-the policy on `senior_caregiver_links` itself would be evaluated
-recursively whenever any other policy calls the helper. With definer,
-the helper bypasses RLS on its single, narrow query.
+Both helpers are `security definer` so they bypass RLS on their
+single narrow lookups — without that, the policy on
+`senior_caregiver_links` would recurse the moment any other policy
+called `is_caregiver_for`, and the policy on `profiles` would
+recurse for `current_profile_id`. `stable` lets the planner memoize
+within a query.
 
 ### Policy stubs
 
@@ -279,69 +348,87 @@ alter table completions enable row level security;
 alter table personal_rewards enable row level security;
 
 -- profiles: a user can see their own row, plus the rows of anyone
--- they're linked to in either direction.
+-- they're linked to in either direction. Inserts/updates of someone
+-- else's profile (the caregiver creating a senior placeholder, or
+-- claim_senior_profile binding auth_user_id) go through SECURITY
+-- DEFINER RPCs so the policy surface stays narrow.
 create policy profiles_select on profiles for select using (
-  id = auth.uid()
+  id = current_profile_id()
   or exists (
     select 1 from senior_caregiver_links l
     where l.status = 'active'
       and (
-        (l.senior_id = profiles.id and l.caregiver_id = auth.uid())
-        or (l.caregiver_id = profiles.id and l.senior_id = auth.uid())
+        (l.senior_id = profiles.id and l.caregiver_id = current_profile_id())
+        or (l.caregiver_id = profiles.id and l.senior_id = current_profile_id())
       )
   )
 );
-create policy profiles_insert on profiles for insert with check (id = auth.uid());
-create policy profiles_update on profiles for update using (id = auth.uid());
+-- Self-update only — caregiver edits to a senior's profile (e.g.
+-- changing display_name) go through an RPC.
+create policy profiles_update on profiles for update using (
+  id = current_profile_id()
+);
 
 -- senior_caregiver_links: visible to either side of the link.
 -- Inserts/updates that cross the trust boundary go through RPCs.
 create policy links_select on senior_caregiver_links for select using (
-  senior_id = auth.uid() or caregiver_id = auth.uid()
+  senior_id = current_profile_id() or caregiver_id = current_profile_id()
 );
 
 -- tasks: senior reads own; caregivers read+write linked seniors' tasks.
 create policy tasks_select on tasks for select using (
-  senior_id = auth.uid() or is_caregiver_for(senior_id)
+  senior_id = current_profile_id() or is_caregiver_for(senior_id)
 );
 create policy tasks_write on tasks for all using (
   is_caregiver_for(senior_id)
 ) with check (
-  is_caregiver_for(senior_id) and created_by = auth.uid()
+  is_caregiver_for(senior_id) and created_by = current_profile_id()
 );
 
 -- task_instances: read by senior + caregivers; writes via RPC.
 create policy instances_select on task_instances for select using (
-  senior_id = auth.uid() or is_caregiver_for(senior_id)
+  senior_id = current_profile_id() or is_caregiver_for(senior_id)
 );
 
 -- completions: senior writes their own; both sides can read.
 create policy completions_select on completions for select using (
-  senior_id = auth.uid() or is_caregiver_for(senior_id)
+  senior_id = current_profile_id() or is_caregiver_for(senior_id)
 );
 create policy completions_insert on completions for insert with check (
-  senior_id = auth.uid()
+  senior_id = current_profile_id()
 );
 create policy completions_delete on completions for delete using (
-  senior_id = auth.uid()
+  senior_id = current_profile_id()
 );
 
 -- personal_rewards: senior reads own active rewards; caregivers
 -- read + write any reward for a senior they're linked to.
 create policy personal_rewards_select on personal_rewards for select using (
-  (senior_id = auth.uid() and active)
+  (senior_id = current_profile_id() and active)
   or is_caregiver_for(senior_id)
 );
 create policy personal_rewards_write on personal_rewards for all using (
   is_caregiver_for(senior_id)
 ) with check (
-  is_caregiver_for(senior_id) and created_by = auth.uid()
+  is_caregiver_for(senior_id) and created_by = current_profile_id()
 );
 ```
 
 `task_instances` has no insert policy — materialization is done by a
 SECURITY DEFINER RPC that the senior calls. This avoids letting a
 malicious client backfill arbitrary dates.
+
+`profiles` has no insert policy either. Three flows create profile
+rows, all SECURITY DEFINER RPCs:
+
+- `bootstrap_self_profile(display_name, timezone)` — called once per
+  new auth user on first sign-in; creates their own profile with
+  `auth_user_id = auth.uid()`.
+- `create_senior_profile(display_name, timezone)` — called by a
+  caregiver; creates a placeholder profile (`auth_user_id = null`)
+  and the matching `senior_caregiver_links` row in one transaction.
+- `claim_senior_profile(code)` — called by a senior on the invite
+  page; binds an existing placeholder to the calling auth user.
 
 ## Deferred (out of v1)
 
@@ -359,11 +446,27 @@ malicious client backfill arbitrary dates.
 
 ## Open questions
 
-1. Invite direction (see lifecycle above). _Decided: caregiver-first.
-   Schema update for placeholder profiles still pending in this doc._
-2. Timezone of "today". _Decided: store IANA tz on profiles, "today"
-   evaluated in the senior's tz, app prompts on detected change.
-   Schema update still pending in this doc._
+All three v1 questions are now resolved; this section is kept for
+the audit trail.
+
+1. ~~Invite direction.~~ Resolved: caregiver-first onboarding with
+   placeholder profiles. See [Onboarding](#onboarding-caregiver-first).
+2. ~~Timezone of "today".~~ Resolved: IANA tz stored on `profiles`,
+   "today" evaluated in the senior's tz, travel handled with a
+   one-tap prompt rather than a silent update.
 3. ~~Whether to keep `rewards` in Postgres or move it to a static
    JSON bundle.~~ Resolved: hybrid — curated stays as a static
    module, personal lives in `personal_rewards`. See [Rewards](#rewards).
+
+The next round of unknowns surfaces when we actually implement:
+
+- Where `bootstrap_self_profile` runs — auth callback page, server
+  action, or a Supabase auth hook? Each has different failure modes
+  on race conditions.
+- Whether the senior's invite link should pre-fill their email so
+  the magic link can be sent server-side at the moment of
+  `create_senior_profile`, or whether the caregiver always hands the
+  link off out-of-band. Affects the schema only insofar as we may
+  want to store the senior's email next to `invite_code`.
+- Migration story: can we get away with one big initial migration,
+  or do we want per-feature migrations from day one?
