@@ -4,6 +4,7 @@ import { requireProfile } from "@/lib/auth";
 import { loadLinkedSenior } from "@/lib/seniors";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { InviteCard } from "./InviteCard";
+import { AutonomyForm, type AutonomyLevel } from "./AutonomyForm";
 
 export default async function SeniorDashboardPage({
   params,
@@ -18,6 +19,14 @@ export default async function SeniorDashboardPage({
 
   const senior = await loadLinkedSenior(id);
   const supabase = await createSupabaseServerClient();
+
+  const { data: autonomyRow } = await supabase
+    .from("profiles")
+    .select("senior_autonomy")
+    .eq("id", senior.id)
+    .maybeSingle();
+  const autonomy: AutonomyLevel =
+    (autonomyRow?.senior_autonomy as AutonomyLevel | undefined) ?? "view_only";
 
   // Materialize today's instances (idempotent), then count completions
   // by joining via instance ids — that avoids timezone-naive comparisons
@@ -82,6 +91,15 @@ export default async function SeniorDashboardPage({
             ? "No tasks scheduled for today."
             : `tasks completed in ${senior.display_name}'s day.`}
         </p>
+      </section>
+
+      <section className="flex flex-col gap-3 rounded-2xl border-2 border-zinc-200 p-5">
+        <h2 className="text-lg font-semibold">Care level</h2>
+        <p className="text-sm text-zinc-600">
+          How much can {senior.display_name} change on their own list?
+          You can dial this up or down at any time.
+        </p>
+        <AutonomyForm seniorId={senior.id} current={autonomy} />
       </section>
 
       <nav className="flex flex-col gap-3">

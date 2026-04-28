@@ -29,15 +29,18 @@ export default async function TodayPage() {
 
   const instanceIds = (rows ?? []).map((r) => r.id);
 
-  let completedSet = new Set<string>();
+  const completedAtById = new Map<string, string>();
   if (instanceIds.length > 0) {
     const { data: comps } = await supabase
       .from("completions")
-      .select("task_instance_id")
+      .select("task_instance_id, completed_at")
       .in("task_instance_id", instanceIds);
-    completedSet = new Set(
-      (comps ?? []).map((c) => c.task_instance_id as string),
-    );
+    for (const c of comps ?? []) {
+      completedAtById.set(
+        c.task_instance_id as string,
+        c.completed_at as string,
+      );
+    }
   }
 
   const instances: Instance[] = (rows ?? [])
@@ -45,7 +48,8 @@ export default async function TodayPage() {
       id: r.id,
       title: r.task?.title ?? "",
       color: r.task?.color ?? null,
-      completed: completedSet.has(r.id),
+      completed: completedAtById.has(r.id),
+      completedAt: completedAtById.get(r.id) ?? null,
     }))
     .filter((i) => i.title);
 

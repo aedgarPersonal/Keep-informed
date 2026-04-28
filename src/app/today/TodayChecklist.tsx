@@ -1,35 +1,65 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { type Reward } from "@/lib/rewards";
 import { COLOR_BG, type ColorName } from "@/lib/task-palette";
-import { completeTaskInstance } from "./actions";
+import { completeTaskInstance, undoCompletion } from "./actions";
 
 export type Instance = {
   id: string;       // task_instance.id
   title: string;
   color: ColorName | null;
   completed: boolean;
+  /** ISO 8601, or null if not yet completed. Used to gate the Undo button. */
+  completedAt: string | null;
 };
+
+const UNDO_WINDOW_MS = 5 * 60 * 1000;
+
+function isWithinUndoWindow(completedAt: string | null | undefined): boolean {
+  if (!completedAt) return false;
+  return Date.now() - new Date(completedAt).getTime() < UNDO_WINDOW_MS;
+}
 
 export function TodayChecklist({ instances }: { instances: Instance[] }) {
   const [done, setDone] = useState<Set<string>>(
     new Set(instances.filter((i) => i.completed).map((i) => i.id)),
   );
+  const [completedAtById, setCompletedAtById] = useState<Map<string, string>>(
+    () => {
+      const m = new Map<string, string>();
+      for (const i of instances) {
+        if (i.completedAt) m.set(i.id, i.completedAt);
+      }
+      return m;
+    },
+  );
   const [reward, setReward] = useState<Reward | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
+  // Tick once a minute so the Undo button disappears after the 5-min
+  // window without forcing a page refresh.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (completedAtById.size === 0) return;
+    const interval = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => clearInterval(interval);
+  }, [completedAtById]);
+
   function complete(id: string) {
     if (done.has(id)) return;
-
-    // Optimistic — flip to done immediately, roll back on failure.
     setDone((prev) => new Set(prev).add(id));
     setError(null);
 
     startTransition(async () => {
       const result = await completeTaskInstance(id);
       if (result.ok) {
+        setCompletedAtById((prev) => {
+          const next = new Map(prev);
+          next.set(id, new Date().toISOString());
+          return next;
+        });
         setReward(result.reward);
       } else {
         setDone((prev) => {
@@ -37,6 +67,27 @@ export function TodayChecklist({ instances }: { instances: Instance[] }) {
           next.delete(id);
           return next;
         });
+        setError(result.message);
+      }
+    });
+  }
+
+  function undo(id: string) {
+    setError(null);
+    startTransition(async () => {
+      const result = await undoCompletion(id);
+      if (result.ok) {
+        setDone((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        setCompletedAtById((prev) => {
+          const next = new Map(prev);
+          next.delete(id);
+          return next;
+        });
+      } else {
         setError(result.message);
       }
     });
@@ -52,8 +103,10 @@ export function TodayChecklist({ instances }: { instances: Instance[] }) {
       <ul className="flex flex-col gap-3">
         {instances.map((task) => {
           const isDone = done.has(task.id);
+          const completedAt = completedAtById.get(task.id) ?? null;
+          const canUndo = isDone && isWithinUndoWindow(completedAt);
           return (
-            <li key={task.id}>
+            <li key={task.id} className="flex flex-col gap-1">
               <button
                 type="button"
                 onClick={() => complete(task.id)}
@@ -87,6 +140,15 @@ export function TodayChecklist({ instances }: { instances: Instance[] }) {
                   <span className="flex-1">{task.title}</span>
                 </span>
               </button>
+              {canUndo && (
+                <button
+                  type="button"
+                  onClick={() => undo(task.id)}
+                  className="self-end px-3 py-1 text-sm font-medium text-blue-700"
+                >
+                  Undo
+                </button>
+              )}
             </li>
           );
         })}

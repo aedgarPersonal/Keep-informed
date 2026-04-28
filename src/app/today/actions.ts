@@ -101,6 +101,27 @@ export async function completeTaskInstance(
   return { ok: true, taskInstanceId, reward: picked };
 }
 
+export type UndoResult =
+  | { ok: true; taskInstanceId: string }
+  | { ok: false; message: string };
+
+export async function undoCompletion(
+  taskInstanceId: string,
+): Promise<UndoResult> {
+  if (!taskInstanceId) {
+    return { ok: false, message: "Missing task instance." };
+  }
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.rpc("undo_completion", {
+    p_task_instance: taskInstanceId,
+  });
+  if (error) {
+    return { ok: false, message: error.message };
+  }
+  revalidatePath("/today");
+  return { ok: true, taskInstanceId };
+}
+
 export async function updateTimezone(timezone: string): Promise<void> {
   if (!timezone) return;
   const supabase = await createSupabaseServerClient();
