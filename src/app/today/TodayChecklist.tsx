@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { pickRandomReward, type Reward } from "@/lib/rewards";
+import { pickReward, type Reward } from "@/lib/rewards";
 
 type Task = {
   id: string;
@@ -11,6 +11,33 @@ type Task = {
 type Props = {
   tasks: Task[];
 };
+
+// Until completions live in the DB, the dedup window is per-device
+// in localStorage. Server-side pick will query
+// completions.reward_key directly.
+const RECENT_KEY = "keep-informed:recent-rewards";
+const RECENT_LIMIT = 4;
+
+function loadRecent(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecent(keys: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RECENT_KEY, JSON.stringify(keys));
+  } catch {
+    // Quota / privacy mode — silently skip; dedup is best-effort.
+  }
+}
 
 export function TodayChecklist({ tasks }: Props) {
   const [done, setDone] = useState<Set<string>>(new Set());
@@ -23,7 +50,11 @@ export function TodayChecklist({ tasks }: Props) {
       next.add(id);
       return next;
     });
-    setReward(pickRandomReward());
+
+    const recent = loadRecent();
+    const picked = pickReward({ recentKeys: recent });
+    saveRecent([picked.key, ...recent].slice(0, RECENT_LIMIT));
+    setReward(picked);
   }
 
   return (
@@ -70,6 +101,19 @@ export function TodayChecklist({ tasks }: Props) {
   );
 }
 
+function rewardLabel(reward: Reward): string {
+  switch (reward.kind) {
+    case "joke":
+      return "A little joke";
+    case "fact":
+      return "Did you know?";
+    case "photo":
+      return "From your family";
+    case "note":
+      return "A note for you";
+  }
+}
+
 function RewardCard({
   reward,
   onDismiss,
@@ -93,9 +137,19 @@ function RewardCard({
           id="reward-title"
           className="text-sm font-semibold uppercase tracking-wide text-blue-700"
         >
-          {reward.kind === "joke" ? "A little joke" : "Did you know?"}
+          {rewardLabel(reward)}
         </p>
-        <p className="mt-3 text-2xl leading-snug text-zinc-900">{reward.body}</p>
+        {reward.mediaUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={reward.mediaUrl}
+            alt={reward.body || "From your family"}
+            className="mt-3 w-full rounded-2xl object-cover"
+          />
+        )}
+        {reward.body && (
+          <p className="mt-3 text-2xl leading-snug text-zinc-900">{reward.body}</p>
+        )}
         <button
           type="button"
           onClick={onDismiss}
