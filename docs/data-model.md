@@ -75,10 +75,25 @@ create index on senior_caregiver_links (caregiver_id);
 
 -- tasks: a recurring checklist item.
 -- weekdays is an int[] of 0..6 (Sun..Sat). "Daily" = [0,1,2,3,4,5,6].
+-- category buckets the task in the caregiver UI; the senior view
+-- ignores it.
+-- color is optional; when set, a strip of that color appears on the
+-- senior's tile. Constrained to a curated palette (see
+-- src/lib/task-palette.ts).
+-- notes is caregiver-facing only — clinical name, dosage, etc. Never
+-- rendered on /today.
+create type task_category as enum
+  ('hygiene', 'medication', 'appointment', 'checkin', 'other');
+
 create table tasks (
   id          uuid primary key default gen_random_uuid(),
   senior_id   uuid not null references profiles(id) on delete cascade,
   title       text not null,
+  category    task_category not null default 'other',
+  color       text check (color is null or color in (
+                'pink','red','orange','yellow','green','blue','purple','brown'
+              )),
+  notes       text,
   weekdays    smallint[] not null check (
                 array_length(weekdays, 1) between 1 and 7
                 and weekdays <@ array[0,1,2,3,4,5,6]::smallint[]
@@ -433,7 +448,11 @@ rows, all SECURITY DEFINER RPCs:
 ## Deferred (out of v1)
 
 - Time-of-day slots ("morning meds" vs "evening meds"). The brief
-  treats today as one flat list.
+  treats today as one flat list. (Categories cover the labelling
+  use case; ordering by time-of-day is still pending.)
+- One-off appointments. v1 supports recurring appointments via the
+  weekday selector; ad-hoc dates ("Tuesday 3pm next week") need a
+  separate `due_date` column and a different completion model.
 - Streaks and gamification beyond a per-completion reward.
 - Recurrence beyond weekday selection (every-other-day, monthly).
 - Photo proof of completion; caregiver-to-caregiver messaging; push notifications.
