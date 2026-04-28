@@ -85,6 +85,10 @@ create index on senior_caregiver_links (caregiver_id);
 create type task_category as enum
   ('hygiene', 'medication', 'appointment', 'checkin', 'other');
 
+-- A task is either recurring (weekdays set) or one-off (due_date set).
+-- Exactly one of the two must be present. One-off tasks are typically
+-- appointments; the materializer picks them up on their due_date and
+-- never again afterwards.
 create table tasks (
   id          uuid primary key default gen_random_uuid(),
   senior_id   uuid not null references profiles(id) on delete cascade,
@@ -94,10 +98,17 @@ create table tasks (
                 'pink','red','orange','yellow','green','blue','purple','brown'
               )),
   notes       text,
-  weekdays    smallint[] not null check (
-                array_length(weekdays, 1) between 1 and 7
-                and weekdays <@ array[0,1,2,3,4,5,6]::smallint[]
+  weekdays    smallint[] check (
+                weekdays is null or (
+                  array_length(weekdays, 1) between 1 and 7
+                  and weekdays <@ array[0,1,2,3,4,5,6]::smallint[]
+                )
               ),
+  due_date    date,
+  constraint tasks_recurrence_xor check (
+    (weekdays is not null and due_date is null) or
+    (weekdays is null and due_date is not null)
+  ),
   created_by  uuid not null references profiles(id),
   created_at  timestamptz not null default now(),
   archived_at timestamptz
@@ -450,9 +461,12 @@ rows, all SECURITY DEFINER RPCs:
 - Time-of-day slots ("morning meds" vs "evening meds"). The brief
   treats today as one flat list. (Categories cover the labelling
   use case; ordering by time-of-day is still pending.)
-- One-off appointments. v1 supports recurring appointments via the
-  weekday selector; ad-hoc dates ("Tuesday 3pm next week") need a
-  separate `due_date` column and a different completion model.
+- Time-of-day on one-off appointments. v1 stores `due_date` only;
+  the appointment time goes in notes. Adding `due_at timestamptz`
+  is a future change.
+- Auto-archival of completed one-off tasks. A past-due one-off
+  with an existing instance currently stays "active" until the
+  caregiver archives it manually.
 - Streaks and gamification beyond a per-completion reward.
 - Recurrence beyond weekday selection (every-other-day, monthly).
 - Photo proof of completion; caregiver-to-caregiver messaging; push notifications.

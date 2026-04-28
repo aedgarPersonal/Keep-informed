@@ -43,13 +43,25 @@ const TEMPLATES_BY_CATEGORY = TEMPLATES.reduce<Record<TaskCategory, Template[]>>
   {} as Record<TaskCategory, Template[]>,
 );
 
+type Schedule = "recurring" | "one_off";
+
 const EMPTY_FORM = {
   title: "",
   category: "other" as TaskCategory,
+  schedule: "recurring" as Schedule,
   weekdays: new Set<number>(),
+  dueDate: "",
   color: null as ColorName | null,
   notes: "",
 };
+
+function todayLocalISO(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 export function NewTaskForm({ seniorId }: { seniorId: string }) {
   const [state, formAction, isPending] = useActionState(
@@ -66,12 +78,44 @@ export function NewTaskForm({ seniorId }: { seniorId: string }) {
   }, [state, isPending]);
 
   function applyTemplate(t: Template) {
+    // Appointments default to one-off; everything else recurring.
+    const oneOff = t.category === "appointment";
     setForm({
       title: t.title,
       category: t.category,
+      schedule: oneOff ? "one_off" : "recurring",
       weekdays: new Set(t.defaultWeekdays ?? []),
+      dueDate: oneOff ? todayLocalISO() : "",
       color: null,
       notes: "",
+    });
+  }
+
+  function setCategory(category: TaskCategory) {
+    setForm((prev) => {
+      // Switching into Appointment flips to one-off if the user hasn't
+      // already chosen a schedule; switching out flips back to recurring.
+      // Don't override if they already typed a date.
+      const flipToOneOff =
+        category === "appointment" && prev.schedule === "recurring";
+      const flipToRecurring =
+        category !== "appointment" &&
+        prev.schedule === "one_off" &&
+        prev.dueDate === "";
+      const schedule: Schedule = flipToOneOff
+        ? "one_off"
+        : flipToRecurring
+          ? "recurring"
+          : prev.schedule;
+      return {
+        ...prev,
+        category,
+        schedule,
+        dueDate:
+          schedule === "one_off" && prev.dueDate === ""
+            ? todayLocalISO()
+            : prev.dueDate,
+      };
     });
   }
 
@@ -122,9 +166,11 @@ export function NewTaskForm({ seniorId }: { seniorId: string }) {
       <form action={formAction} className="flex flex-col gap-4">
         <input type="hidden" name="senior_id" value={seniorId} />
         <input type="hidden" name="color" value={form.color ?? ""} />
-        {Array.from(form.weekdays).map((d) => (
-          <input key={d} type="hidden" name="weekdays" value={d} />
-        ))}
+        <input type="hidden" name="schedule" value={form.schedule} />
+        {form.schedule === "recurring" &&
+          Array.from(form.weekdays).map((d) => (
+            <input key={d} type="hidden" name="weekdays" value={d} />
+          ))}
 
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium text-zinc-700">Task</span>
@@ -154,12 +200,7 @@ export function NewTaskForm({ seniorId }: { seniorId: string }) {
           <select
             name="category"
             value={form.category}
-            onChange={(e) =>
-              setForm((prev) => ({
-                ...prev,
-                category: e.target.value as TaskCategory,
-              }))
-            }
+            onChange={(e) => setCategory(e.target.value as TaskCategory)}
             className="h-12 rounded-2xl border-2 border-zinc-300 bg-white px-4 text-lg"
           >
             {CATEGORY_ORDER.map((c) => (
@@ -170,32 +211,81 @@ export function NewTaskForm({ seniorId }: { seniorId: string }) {
           </select>
         </label>
 
+        {/* Schedule: recurring vs one-off */}
         <fieldset className="flex flex-col gap-2">
-          <legend className="text-sm font-medium text-zinc-700">
-            Days (leave all unchecked for daily)
-          </legend>
+          <legend className="text-sm font-medium text-zinc-700">When</legend>
           <div className="flex gap-2">
-            {DAYS.map((d) => {
-              const isOn = form.weekdays.has(d.value);
-              return (
-                <button
-                  key={d.value}
-                  type="button"
-                  onClick={() => toggleDay(d.value)}
-                  aria-pressed={isOn}
-                  className={
-                    "flex h-12 w-12 items-center justify-center rounded-xl border-2 text-base font-semibold " +
-                    (isOn
-                      ? "border-blue-700 bg-blue-700 text-white"
-                      : "border-zinc-300 text-zinc-700")
-                  }
-                >
-                  {d.label}
-                </button>
-              );
-            })}
+            {(["recurring", "one_off"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    schedule: s,
+                    dueDate:
+                      s === "one_off" && prev.dueDate === ""
+                        ? todayLocalISO()
+                        : prev.dueDate,
+                  }))
+                }
+                aria-pressed={form.schedule === s}
+                className={
+                  "flex h-12 flex-1 items-center justify-center rounded-xl border-2 text-base font-semibold " +
+                  (form.schedule === s
+                    ? "border-blue-700 bg-blue-700 text-white"
+                    : "border-zinc-300 text-zinc-700")
+                }
+              >
+                {s === "recurring" ? "Recurring" : "One-off"}
+              </button>
+            ))}
           </div>
         </fieldset>
+
+        {form.schedule === "recurring" ? (
+          <fieldset className="flex flex-col gap-2">
+            <legend className="text-sm font-medium text-zinc-700">
+              Days (leave all unchecked for daily)
+            </legend>
+            <div className="flex gap-2">
+              {DAYS.map((d) => {
+                const isOn = form.weekdays.has(d.value);
+                return (
+                  <button
+                    key={d.value}
+                    type="button"
+                    onClick={() => toggleDay(d.value)}
+                    aria-pressed={isOn}
+                    className={
+                      "flex h-12 w-12 items-center justify-center rounded-xl border-2 text-base font-semibold " +
+                      (isOn
+                        ? "border-blue-700 bg-blue-700 text-white"
+                        : "border-zinc-300 text-zinc-700")
+                    }
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        ) : (
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-zinc-700">Date</span>
+            <input
+              type="date"
+              name="due_date"
+              required
+              min={todayLocalISO()}
+              value={form.dueDate}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, dueDate: e.target.value }))
+              }
+              className="h-12 rounded-2xl border-2 border-zinc-300 px-4 text-lg"
+            />
+          </label>
+        )}
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-sm font-medium text-zinc-700">

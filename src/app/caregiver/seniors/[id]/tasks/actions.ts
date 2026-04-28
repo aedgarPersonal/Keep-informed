@@ -18,13 +18,14 @@ function parseWeekdays(formData: FormData): number[] {
   return valid.length > 0 ? Array.from(new Set(valid)).sort() : ALL_DAYS;
 }
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export async function createTask(
   _prev: TaskFormState,
   formData: FormData,
 ): Promise<TaskFormState> {
   const seniorId = String(formData.get("senior_id") ?? "");
   const title = String(formData.get("title") ?? "").trim();
-  const weekdays = parseWeekdays(formData);
 
   const categoryRaw = formData.get("category");
   const category = isTaskCategory(categoryRaw) ? categoryRaw : "other";
@@ -35,8 +36,23 @@ export async function createTask(
   const notesRaw = String(formData.get("notes") ?? "").trim();
   const notes = notesRaw.length > 0 ? notesRaw.slice(0, 500) : null;
 
+  const schedule = String(formData.get("schedule") ?? "recurring");
+
   if (!seniorId) return { status: "error", message: "Missing senior id." };
   if (!title) return { status: "error", message: "Please enter a title." };
+
+  let weekdays: number[] | null = null;
+  let dueDate: string | null = null;
+
+  if (schedule === "one_off") {
+    const dueRaw = String(formData.get("due_date") ?? "").trim();
+    if (!DATE_RE.test(dueRaw)) {
+      return { status: "error", message: "Please pick a date." };
+    }
+    dueDate = dueRaw;
+  } else {
+    weekdays = parseWeekdays(formData);
+  }
 
   const supabase = await createSupabaseServerClient();
   const profileId = await getCallerProfileId();
@@ -45,6 +61,7 @@ export async function createTask(
     senior_id: seniorId,
     title,
     weekdays,
+    due_date: dueDate,
     category,
     color,
     notes,

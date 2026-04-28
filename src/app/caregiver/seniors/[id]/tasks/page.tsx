@@ -29,11 +29,24 @@ function describeWeekdays(weekdays: number[]): string {
 type TaskRow = {
   id: string;
   title: string;
-  weekdays: number[];
+  weekdays: number[] | null;
+  due_date: string | null;
   category: TaskCategory;
   color: ColorName | null;
   notes: string | null;
 };
+
+function describeSchedule(t: TaskRow): string {
+  if (t.due_date) {
+    const d = new Date(`${t.due_date}T12:00:00`);
+    return d.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+  }
+  return describeWeekdays(t.weekdays ?? []);
+}
 
 export default async function TasksPage({
   params,
@@ -47,7 +60,7 @@ export default async function TasksPage({
 
   const { data: tasks, error } = await supabase
     .from("tasks")
-    .select("id, title, weekdays, category, color, notes")
+    .select("id, title, weekdays, due_date, category, color, notes")
     .eq("senior_id", senior.id)
     .is("archived_at", null)
     .order("created_at", { ascending: true })
@@ -93,7 +106,7 @@ export default async function TasksPage({
                       </span>
                     </span>
                     <span className="text-sm text-zinc-500">
-                      {describeWeekdays(t.weekdays)}
+                      {describeSchedule(t)}
                     </span>
                     {t.notes && (
                       <span className="text-sm italic text-zinc-500">
