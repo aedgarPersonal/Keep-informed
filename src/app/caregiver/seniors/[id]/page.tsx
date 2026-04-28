@@ -99,6 +99,13 @@ export default async function SeniorDashboardPage({
           <span>Personal rewards</span>
           <span aria-hidden className="text-2xl text-zinc-400">›</span>
         </Link>
+        <Link
+          href={`/caregiver/seniors/${senior.id}/caregivers`}
+          className="flex h-14 items-center justify-between rounded-2xl border-2 border-zinc-300 px-5 text-lg font-medium"
+        >
+          <span>Caregivers</span>
+          <span aria-hidden className="text-2xl text-zinc-400">›</span>
+        </Link>
       </nav>
     </main>
   );
