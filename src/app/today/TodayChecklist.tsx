@@ -1,66 +1,54 @@
 "use client";
 
-import { useState } from "react";
-import { pickReward, type Reward } from "@/lib/rewards";
+import { useState, useTransition } from "react";
+import { type Reward } from "@/lib/rewards";
+import { completeTaskInstance } from "./actions";
 
-type Task = {
-  id: string;
+export type Instance = {
+  id: string;       // task_instance.id
   title: string;
+  completed: boolean;
 };
 
-type Props = {
-  tasks: Task[];
-};
-
-// Until completions live in the DB, the dedup window is per-device
-// in localStorage. Server-side pick will query
-// completions.reward_key directly.
-const RECENT_KEY = "keep-informed:recent-rewards";
-const RECENT_LIMIT = 4;
-
-function loadRecent(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(RECENT_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecent(keys: string[]) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(RECENT_KEY, JSON.stringify(keys));
-  } catch {
-    // Quota / privacy mode — silently skip; dedup is best-effort.
-  }
-}
-
-export function TodayChecklist({ tasks }: Props) {
-  const [done, setDone] = useState<Set<string>>(new Set());
+export function TodayChecklist({ instances }: { instances: Instance[] }) {
+  const [done, setDone] = useState<Set<string>>(
+    new Set(instances.filter((i) => i.completed).map((i) => i.id)),
+  );
   const [reward, setReward] = useState<Reward | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [, startTransition] = useTransition();
 
   function complete(id: string) {
     if (done.has(id)) return;
-    setDone((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
 
-    const recent = loadRecent();
-    const picked = pickReward({ recentKeys: recent });
-    saveRecent([picked.key, ...recent].slice(0, RECENT_LIMIT));
-    setReward(picked);
+    // Optimistic — flip to done immediately, roll back on failure.
+    setDone((prev) => new Set(prev).add(id));
+    setError(null);
+
+    startTransition(async () => {
+      const result = await completeTaskInstance(id);
+      if (result.ok) {
+        setReward(result.reward);
+      } else {
+        setDone((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        setError(result.message);
+      }
+    });
   }
 
   return (
     <>
+      {error && (
+        <p className="rounded-2xl bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </p>
+      )}
       <ul className="flex flex-col gap-3">
-        {tasks.map((task) => {
+        {instances.map((task) => {
           const isDone = done.has(task.id);
           return (
             <li key={task.id}>
