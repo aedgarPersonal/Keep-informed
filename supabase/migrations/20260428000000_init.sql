@@ -168,7 +168,7 @@ as $$
 declare
   v_caregiver uuid := current_profile_id();
   v_senior    uuid;
-  v_code      text := encode(gen_random_bytes(8), 'hex');
+  v_code      text := encode(extensions.gen_random_bytes(8), 'hex');
 begin
   if v_caregiver is null then
     raise exception 'caller has no profile';
