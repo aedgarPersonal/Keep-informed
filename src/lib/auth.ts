@@ -105,3 +105,23 @@ export async function requireSenior(): Promise<Profile> {
   }
   return profile;
 }
+
+/**
+ * Allow only app admins (rows in `app_admins`). Admins are
+ * orthogonal to the senior/caregiver model — they don't need a
+ * `profiles` row. Non-admins are bounced to the homepage rather
+ * than /onboard so we don't push admin-only users into a profile
+ * they don't need.
+ */
+export async function requireAdmin(): Promise<SessionUser> {
+  const user = await requireSession();
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("is_app_admin");
+  if (error) {
+    throw new Error(`admin check failed: ${error.message}`);
+  }
+  if (!data) {
+    redirect("/");
+  }
+  return user;
+}

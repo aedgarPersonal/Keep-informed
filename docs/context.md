@@ -74,7 +74,7 @@ the senior, or `is_caregiver_for(senior_id)` is true." Both are
 
 ## Role gating in app code
 
-`src/lib/auth.ts` exposes four helpers; pick the smallest one that
+`src/lib/auth.ts` exposes five helpers; pick the smallest one that
 covers the route. Pages should call them directly in the layout (or
 the page if the layout is shared).
 
@@ -84,12 +84,19 @@ the page if the layout is shared).
 | `requireProfile()` | Page needs a `profiles` row; redirects authed-but-unbootstrapped users to `/onboard`. |
 | `requireSenior()` | Page is for the senior. Bounces caregivers (incl. fresh ones with zero links) to `/caregiver`. |
 | `requireCaregiver()` | Page is for caregivers. Bounces anyone who is the senior in any active link to `/today`. |
+| `requireAdmin()` | Page is for app admins (`/admin/*`). Calls `is_app_admin()` RPC; non-admins go to `/`. Does **not** require a profile — admins are orthogonal to senior/caregiver. |
 
 "Senior-ness" is *derived* from `senior_caregiver_links`, not stored
 on the profile. A new caregiver with zero links is not a senior
 anywhere; a person who claims an invite becomes one. This means a
 single user can never sit in both roles in v1 — `requireSenior` and
 `requireCaregiver` are mutually exclusive for a given profile.
+
+Admin is the third axis. It lives on `app_admins` (an `auth.users`
+mirror), not on `profiles`. Admin status doesn't grant senior or
+caregiver access; it grants `/admin`. An admin who also wants to
+use the app as a caregiver/senior needs a profile via the normal
+onboard flow.
 
 For server actions where redirecting is wrong, use
 `getCallerProfileId()` — throws on missing rather than redirecting.
@@ -247,10 +254,50 @@ Applied in filename order. Current set:
 7. `..._senior_task_rpcs.sql` — `senior_create_task`,
    `senior_archive_task`.
 8. `..._senior_task_update.sql` — senior task edit RPC.
+9. `..._harden_trigger_search_path.sql` — pins `search_path = public`
+   on the autonomy-edit trigger (closes Supabase advisor 0011).
+10. `..._app_admins.sql` — `app_admins` table, `is_app_admin()`,
+    and the `list_billing_groups()` admin RPC. See
+    [Admin role](#admin-role).
 
 Local: `supabase db reset` (drops, re-runs migrations + `seed.sql`).
 Hosted: `supabase db push`. **Never** run `seed.sql` against
 production — it inserts a fake `auth.users` row.
+
+## Admin role
+
+The `/admin` route is for operators (you), not seniors or
+caregivers. It lives on its own axis: `app_admins` is an
+`auth.users` mirror (just `user_id` + `created_at`), separate from
+`profiles`. Admin access doesn't imply caregiver or senior status,
+and doesn't require a `profiles` row at all.
+
+Architecture choices and their reasoning:
+
+- **Granting admin is out-of-band.** No in-app flow. The trust
+  boundary is the database — to make someone an admin, run in the
+  Supabase SQL editor:
+  ```sql
+  insert into app_admins (user_id)
+    select id from auth.users where email = '<email>';
+  ```
+  This avoids an "admin invite" attack surface and keeps the role
+  obviously privileged.
+- **`app_admins` has RLS enabled with no policies.** Reads happen
+  only via the `is_app_admin()` SECURITY DEFINER helper; writes
+  happen via the SQL editor (postgres role bypasses RLS).
+  PostgREST cannot reach the table.
+- **Billing data via RPC, not raw selects.** `list_billing_groups()`
+  returns one row per senior with at least one active caregiver
+  link, plus engagement metrics (active task count, last
+  completion, completions in the last 30 days) and the linked
+  caregivers as a JSONB array. The shape mirrors the billable unit
+  in the product brief: senior + their circle.
+- **The `/admin` page renders the RPC output directly.** Admins
+  read `auth.users.email` for both senior and caregiver via the
+  RPC's SECURITY DEFINER cross-schema read. Don't route admin
+  reads through PostgREST — RLS would have to grant cross-table
+  visibility, which weakens the rest of the policy surface.
 
 ## Deferred (out of v1)
 
